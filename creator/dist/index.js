@@ -10,13 +10,29 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const selenium_webdriver_1 = require("selenium-webdriver");
+const chrome_1 = require("selenium-webdriver/chrome");
+// will use selenium grid
 function main() {
     return __awaiter(this, void 0, void 0, function* () {
-        let driver = yield new selenium_webdriver_1.Builder().forBrowser(selenium_webdriver_1.Browser.CHROME).build();
+        const options = new chrome_1.Options();
+        options.addArguments("--disable-blink-features=AutomationControlled");
+        options.addArguments("--use-fake-ui-for-media-stream");
+        let driver = yield new selenium_webdriver_1.Builder()
+            .forBrowser(selenium_webdriver_1.Browser.CHROME)
+            .setChromeOptions(options)
+            .build();
         try {
-            yield driver.get("https://www.google.com/ncr");
-            yield driver.findElement(selenium_webdriver_1.By.name("q")).sendKeys("pornhub", selenium_webdriver_1.Key.RETURN);
-            yield driver.wait(selenium_webdriver_1.until.titleIs("pornhub - Google Search"), 10000000);
+            yield driver.get("https://meet.google.com/rds-fxai-xbo");
+            const popUp = yield driver.wait(selenium_webdriver_1.until.elementLocated(selenium_webdriver_1.By.xpath("//span[contains(text(),'Got it')]")), 20000);
+            yield popUp.click();
+            yield driver.sleep(3000);
+            const nameInput = yield driver.wait(selenium_webdriver_1.until.elementLocated(selenium_webdriver_1.By.css("input[aria-label='Your name']")), 20000);
+            yield nameInput.clear();
+            yield nameInput.click();
+            yield nameInput.sendKeys("Meeting bot");
+            const joinButton = yield driver.wait(selenium_webdriver_1.until.elementLocated(selenium_webdriver_1.By.xpath("//span[contains(text(),'Ask to join') or contains(text(),'Join')]")), 20000);
+            yield joinButton.click();
+            yield driver.wait(selenium_webdriver_1.until.elementLocated(selenium_webdriver_1.By.id("sdalkdasd")), 1000000);
         }
         finally {
             yield driver.quit();
