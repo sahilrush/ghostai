@@ -9,7 +9,6 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
     });
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CHROME_CONSTANTS = void 0;
 const selenium_webdriver_1 = require("selenium-webdriver");
 const chrome_1 = require("selenium-webdriver/chrome");
 function meetingbot(driver) {
@@ -47,136 +46,57 @@ function getDriver() {
         return driver;
     });
 }
-exports.CHROME_CONSTANTS = {
-    CHROME_OPTIONS1: [
-        "----user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
-        "--disable-blink-features=AutomationControlled",
-        "--use-fake-ui-for-media-stream",
-        "--window-size=1920,1080",
-        "--disable-notifications",
-        "--auto-select-desktop-capture-source=[RECORD]",
-        "--enable-usermedia-screen-capturing",
-        "--allow-running-insecure-content",
-        "--safebrowsing-disable-download-protection",
-        "--disable-download-notification",
-        "--disable-gpu",
-        "--no-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-extensions",
-        "--disable-software-rasterizer",
-        "--remote-debugging-port=9222",
-        "--headless",
-    ],
-    CHROME_OPTIONS: [
-        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
-        "--disable-blink-features=AutomationControlled",
-        "--use-fake-ui-for-media-stream",
-        "--window-size=1920,1080",
-        "--disable-notifications",
-        "--auto-select-desktop-capture-source=[RECORD]",
-        "--enable-usermedia-screen-capturing",
-        "--allow-running-insecure-content",
-        "--safebrowsing-disable-download-protection",
-        "--disable-download-notification",
-        "--disable-gpu",
-        "--no-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-extensions",
-        "--disable-software-rasterizer",
-        "--remote-debugging-port=9222",
-        // "--headless",
-        "--force-device-scale-factor=1",
-        "--high-dpi-support=1",
-        "--disable-low-res-tiling",
-        "--enable-font-antialiasing",
-        "--enable-smooth-scrolling",
-        "--disable-pinch",
-        "--no-first-run",
-        "--disable-background-timer-throttling",
-        "--disable-backgrounding-occluded-windows",
-    ],
-    MEDIA_STREAM_OPTIONS: {
-        video: {
-            displaySurface: "browser",
-        },
-        systemAudio: "include",
-        audio: false,
-        preferCurrentTab: true,
-    },
-};
 function startScreenShare(driver) {
     return __awaiter(this, void 0, void 0, function* () {
         const response = yield driver.executeScript(`
-   (async () => {
-        const mediaStreamOptions = ${JSON.stringify(exports.CHROME_CONSTANTS.MEDIA_STREAM_OPTIONS)};
-        const stream = await navigator.mediaDevices.getDisplayMedia(mediaStreamOptions);
-
-        const audioContext = new AudioContext();
-        const audioEl1 = document.querySelectorAll("audio")[0];
-        const audioEl2 = document.querySelectorAll("audio")[1];
-        const audioEl3 = document.querySelectorAll("audio")[2];
-        const audioStream1 = audioContext.createMediaStreamSource(audioEl1.srcObject)
-        const audioStream2 = audioContext.createMediaStreamSource(audioEl2.srcObject)
-        const audioStream3 = audioContext.createMediaStreamSource(audioEl3.srcObject)
-
-        const dest = audioContext.createMediaStreamDestination();
-        audioStream1.connect(dest)
-        audioStream2.connect(dest)
-        audioStream3.connect(dest)
-
-        const combinedStream = new MediaStream([
-            ...stream.getVideoTracks(),
-            ...dest.stream.getAudioTracks()
-        ]);
-
-        const mediaRecorder = new MediaRecorder(combinedStream, {
-            mimeType: "video/webm; codecs=vp8,opus",
-            timeSlice: 10000,
-            videoBitsPerSecond: 1800000,
-        });
-
-        console.log("Starting media recording...");
-        mediaRecorder.start(10000);
-
-        // Store recording data in array instead of sending via WebSocket
-        const recordedChunks = [];
-        
-        mediaRecorder.ondataavailable = (event) => {
-            if (event.data.size > 0) {
-                recordedChunks.push(event.data);
-                console.log('Recorded chunk:', event.data.size, 'bytes');
-            }
-        };
-
-        mediaRecorder.onstop = () => {
-            stream.getTracks().forEach(track => track.stop());
-            console.log('Media recording stopped');
-            
-            // Optionally create a downloadable blob from the recorded chunks
-            const blob = new Blob(recordedChunks, { type: 'video/webm' });
-            const url = URL.createObjectURL(blob);
-            
-            // You could create a download link or handle the blob as needed
-            console.log('Recording complete, blob URL:', url);
-            
-            // Example: create a download link
-            const a = document.createElement('a');
-            document.body.appendChild(a);
-            a.style = 'display: none';
-            a.href = url;
-            a.download = 'screen-recording.webm';
-            a.click();
-            
-            // Revoke the blob URL
-            window.URL.revokeObjectURL(url);
-        };
-        
-        // Expose mediaRecorder to global scope for the stop function
-        window.mediaRecorder = mediaRecorder;
-        })();
+function wait(delayInMS) {
+             return new Promise((resolve) => setTimeout(resolve, delayInMS));
+         }
+ 
+         function startRecording(stream, lengthInMS) {
+             let recorder = new MediaRecorder(stream);
+             let data = [];
+             
+             recorder.ondataavailable = (event) => data.push(event.data);
+             recorder.start();
+             
+             let stopped = new Promise((resolve, reject) => {
+                 recorder.onstop = resolve;
+                 recorder.onerror = (event) => reject(event.name);
+             });
+             
+             let recorded = wait(lengthInMS).then(() => {
+                 if (recorder.state === "recording") {
+                 recorder.stop();
+                 }
+             });
+             
+             return Promise.all([stopped, recorded]).then(() => data);
+         }
+       
+         console.log("before mediadevices")
+         window.navigator.mediaDevices.getDisplayMedia({
+             video: {
+               displaySurface: "browser"
+             },
+             audio: true,
+             preferCurrentTab: true
+         }).then(async stream => {
+             // stream should be streamed via WebRTC to a server
+             console.log("before start recording")
+             const recordedChunks = await startRecording(stream, 20000);
+             console.log("after start recording")
+             let recordedBlob = new Blob(recordedChunks, { type: "video/webm" });
+             const recording = document.createElement("video");
+             recording.src = URL.createObjectURL(recordedBlob);
+             const downloadButton = document.createElement("a");
+             downloadButton.href = recording.src;
+             downloadButton.download = "RecordedVideo.webm";    
+             downloadButton.click();
+             console.log("after download button click")
+         })
 `);
         console.log(response);
-        driver.sleep(10000);
     });
 }
 function main() {
@@ -186,7 +106,7 @@ function main() {
         driver.sleep(10000);
         // wait until admin lets u join
         yield startScreenShare(driver);
-        driver.sleep(10000);
+        driver.sleep(100000);
     });
 }
 main();
