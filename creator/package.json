@@ -13,7 +13,9 @@
     "@types/selenium-webdriver": "^4.1.28"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.800.0",
     "@types/ws": "^8.18.1",
+    "uuidv4": "^6.2.13",
     "ws": "^8.18.1"
   }
 }

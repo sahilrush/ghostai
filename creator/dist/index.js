@@ -14,6 +14,12 @@ const selenium_webdriver_1 = require("selenium-webdriver");
 const chrome_1 = require("selenium-webdriver/chrome");
 const ws_1 = require("./ws");
 const MEET_URL = "https://meet.google.com/rbq-xawq-chm";
+var MeetingEndReason;
+(function (MeetingEndReason) {
+    MeetingEndReason["REMOVED"] = "removed";
+    MeetingEndReason["ENDED"] = "ended";
+    MeetingEndReason["ALONE"] = "alone";
+})(MeetingEndReason || (MeetingEndReason = {}));
 function openMeet(driver) {
     return __awaiter(this, void 0, void 0, function* () {
         yield driver.get(MEET_URL);
@@ -38,41 +44,19 @@ function openMeet(driver) {
         catch (e) { }
     });
 }
-function muteMeetSpeaker(driver) {
-    return __awaiter(this, void 0, void 0, function* () {
-        try {
-            // Open the "More options" menu (three dots)
-            const moreOptionsButton = yield driver.wait(selenium_webdriver_1.until.elementLocated(selenium_webdriver_1.By.css('[aria-label="More options"]')), 10000);
-            yield moreOptionsButton.click();
-            yield driver.sleep(500); // Wait for menu to open
-            // Click "Turn off sound"
-            const soundButton = yield driver.wait(selenium_webdriver_1.until.elementLocated(selenium_webdriver_1.By.xpath("//span[contains(text(), 'Turn off sound')]")), 5000);
-            yield soundButton.click();
-            yield driver.sleep(500); // Wait for action to complete
-            // Optionally, close the menu (by pressing Escape)
-            yield driver.actions().sendKeys("\uE00C").perform(); // ESC key
-        }
-        catch (e) {
-            console.log("Speaker mute option not found or already muted.");
-        }
-    });
-}
 function muteMeetAudio(driver) {
     return __awaiter(this, void 0, void 0, function* () {
         // Mute microphone
         try {
-            // Try to find the mic button (may vary by UI version)
             const micButton = yield driver.wait(selenium_webdriver_1.until.elementLocated(selenium_webdriver_1.By.css('[aria-label*="Turn off microphone"], [aria-label*="Mute microphone"]')), 5000);
             yield micButton.click();
         }
         catch (e) { }
         // Mute speakers (if available)
         try {
-            // Open "More options" menu
             const moreOptionsButton = yield driver.findElement(selenium_webdriver_1.By.css('[aria-label="More options"]'));
             yield moreOptionsButton.click();
             yield driver.sleep(500);
-            // Find and click "Turn off sound"
             const soundButton = yield driver.findElement(selenium_webdriver_1.By.xpath("//span[contains(text(), 'Turn off sound')]"));
             yield soundButton.click();
         }
@@ -98,36 +82,95 @@ function startScreenshare(driver) {
       const ws = new WebSocket('ws://localhost:3001');
       await new Promise(res => ws.onopen = res);
 
-      // Wait for the page to be fully ready
       await new Promise(res => setTimeout(res, 3000));
 
-      // Only capture tab/system audio (not mic)
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: { displaySurface: "browser" },
         audio: true
       });
 
-      const recorder = new MediaRecorder(stream, {
+      const mediaRecorder = new MediaRecorder(stream, {
         mimeType: "video/webm; codecs=vp8,opus",
         videoBitsPerSecond: 1800000
       });
 
-      recorder.ondataavailable = (event) => {
+      mediaRecorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0 && ws.readyState === 1) {
           ws.send(event.data);
         }
       };
 
-      recorder.onstop = () => {
-        ws.close();
+      mediaRecorder.onstop = () => {
+        if (ws.readyState === 1) ws.close();
       };
 
-      recorder.start(10000); // 10-second chunks
-      window.recorder = recorder; // For manual stop/debug
+      mediaRecorder.start(10000); // 10-second chunks
+      window.mediaRecorder = mediaRecorder;
+      window.ws = ws;
+
+      window.stopRecording = () => {
+        try {
+          if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+            mediaRecorder.stop();
+          }
+          if (ws && ws.readyState === 1) {
+            ws.close();
+          }
+        } catch (err) {}
+      };
     })();
   `);
-        // Keep the driver alive while recording
-        yield driver.sleep(60 * 60 * 1000); // 1 hour
+    });
+}
+function waitForMeetingToEndOrAlone(driver) {
+    return __awaiter(this, void 0, void 0, function* () {
+        let aloneSince = null;
+        const ALONE_TIMEOUT = 3 * 60 * 1000; // 3 minutes
+        while (true) {
+            let participantCount = 1;
+            try {
+                // Try to get participant count from the Meet UI (top right button)
+                const countElem = yield driver.findElement(selenium_webdriver_1.By.css('[aria-label^="Participants"]'));
+                const label = yield countElem.getAttribute("aria-label");
+                const match = label.match(/(\d+)/);
+                if (match)
+                    participantCount = parseInt(match[1], 10);
+            }
+            catch (e) {
+                // Fallback: count participant tiles
+                try {
+                    const tiles = yield driver.findElements(selenium_webdriver_1.By.css('div[role="listitem"]'));
+                    participantCount = tiles.length;
+                }
+                catch (e2) {
+                    participantCount = 1;
+                }
+            }
+            // Check for meeting end or removal
+            try {
+                yield driver.findElement(selenium_webdriver_1.By.xpath("//span[contains(text(), 'You’ve been removed')]"));
+                return MeetingEndReason.REMOVED;
+            }
+            catch (e) { }
+            try {
+                yield driver.findElement(selenium_webdriver_1.By.xpath("//span[contains(text(), 'Meeting ended')]"));
+                return MeetingEndReason.ENDED;
+            }
+            catch (e) { }
+            // Check if alone
+            if (participantCount <= 1) {
+                if (!aloneSince)
+                    aloneSince = Date.now();
+                if (Date.now() - aloneSince > ALONE_TIMEOUT) {
+                    console.log("Alone for 3 minutes, exiting...");
+                    return MeetingEndReason.ALONE;
+                }
+            }
+            else {
+                aloneSince = null;
+            }
+            yield driver.sleep(5000); // Check every 5 seconds
+        }
     });
 }
 function main() {
@@ -135,9 +178,21 @@ function main() {
         (0, ws_1.startWebSocketServer)(3001);
         const driver = yield getDriver();
         yield openMeet(driver);
-        yield muteMeetAudio(driver); // Mute mic and speakers
+        yield muteMeetAudio(driver);
         yield new Promise((x) => setTimeout(x, 20000)); // Wait for host to admit
         yield startScreenshare(driver);
+        // Wait for meeting end or alone timeout
+        const reason = yield waitForMeetingToEndOrAlone(driver);
+        // Stop recording gracefully before quitting
+        try {
+            yield driver.executeScript(`if(window.stopRecording) window.stopRecording();`);
+            yield driver.sleep(2000); // Give time for recorder to finish
+        }
+        catch (e) {
+            console.log("Could not stop recording gracefully:", e);
+        }
+        yield driver.quit();
+        process.exit(0);
     });
 }
 main();
