@@ -3,6 +3,22 @@ import { Builder, Browser, By, until, WebDriver } from "selenium-webdriver";
 import { Options } from "selenium-webdriver/chrome";
 import { startWebSocketServer } from "./ws";
 
+// Logging utility
+const log = {
+  info: (message: string, ...args: any[]) => {
+    console.log(`[INFO] ${new Date().toISOString()} - ${message}`, ...args);
+  },
+  error: (message: string, ...args: any[]) => {
+    console.error(`[ERROR] ${new Date().toISOString()} - ${message}`, ...args);
+  },
+  warn: (message: string, ...args: any[]) => {
+    console.warn(`[WARN] ${new Date().toISOString()} - ${message}`, ...args);
+  },
+  debug: (message: string, ...args: any[]) => {
+    console.debug(`[DEBUG] ${new Date().toISOString()} - ${message}`, ...args);
+  },
+};
+
 const MEET_URL = "https://meet.google.com/rbq-xawq-chm";
 
 enum MeetingEndReason {
@@ -12,6 +28,7 @@ enum MeetingEndReason {
 }
 
 async function openMeet(driver: WebDriver) {
+  log.info("Opening Google Meet...");
   await driver.get(MEET_URL);
 
   // Accept "Got it" popup
@@ -21,7 +38,10 @@ async function openMeet(driver: WebDriver) {
       10000
     );
     await popupButton.click();
-  } catch (e) {}
+    log.info("Accepted 'Got it' popup");
+  } catch (e) {
+    log.warn("No 'Got it' popup found or timed out");
+  }
 
   // Fill name if prompted
   try {
@@ -31,7 +51,10 @@ async function openMeet(driver: WebDriver) {
     );
     await nameInput.clear();
     await nameInput.sendKeys("Meeting bot");
-  } catch (e) {}
+    log.info("Filled in bot name");
+  } catch (e) {
+    log.warn("No name input found or timed out");
+  }
 
   // Click "Ask to join"
   try {
@@ -40,10 +63,14 @@ async function openMeet(driver: WebDriver) {
       10000
     );
     await joinButton.click();
-  } catch (e) {}
+    log.info("Clicked 'Ask to join' button");
+  } catch (e) {
+    log.error("Failed to click 'Ask to join' button:", e);
+  }
 }
 
 async function muteMeetAudio(driver: WebDriver) {
+  log.info("Muting audio...");
   // Mute microphone
   try {
     const micButton = await driver.wait(
@@ -55,7 +82,10 @@ async function muteMeetAudio(driver: WebDriver) {
       5000
     );
     await micButton.click();
-  } catch (e) {}
+    log.info("Microphone muted");
+  } catch (e) {
+    log.warn("Failed to mute microphone:", e);
+  }
 
   // Mute speakers (if available)
   try {
@@ -69,7 +99,10 @@ async function muteMeetAudio(driver: WebDriver) {
       By.xpath("//span[contains(text(), 'Turn off sound')]")
     );
     await soundButton.click();
-  } catch (e) {}
+    log.info("Speakers muted");
+  } catch (e) {
+    log.warn("Failed to mute speakers:", e);
+  }
 }
 
 async function getDriver() {
@@ -93,100 +126,232 @@ async function getDriver() {
 }
 
 async function startScreenshare(driver: WebDriver) {
+  log.info("Starting screen share recording...");
   await driver.executeScript(`
     (async () => {
       const ws = new WebSocket('ws://localhost:3001');
-      await new Promise(res => ws.onopen = res);
+      
+      // Add WebSocket event listeners
+      ws.onopen = () => {
+        console.log('WebSocket connection established');
+      };
+      
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+      };
+      
+      ws.onclose = () => {
+        console.log('WebSocket connection closed');
+      };
+
+      await new Promise(res => {
+        if (ws.readyState === WebSocket.OPEN) {
+          res();
+        } else {
+          ws.onopen = res;
+        }
+      });
 
       await new Promise(res => setTimeout(res, 3000));
 
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { displaySurface: "browser" },
-        audio: true
-      });
+      try {
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+          video: { 
+            displaySurface: "browser",
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+            frameRate: { ideal: 30 }
+          },
+          audio: true
+        });
 
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: "video/webm; codecs=vp8,opus",
-        videoBitsPerSecond: 1800000
-      });
+        console.log('Screen share stream obtained');
 
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0 && ws.readyState === 1) {
-          ws.send(event.data);
-        }
-      };
+        const mediaRecorder = new MediaRecorder(stream, {
+          mimeType: "video/webm; codecs=vp8,opus",
+          videoBitsPerSecond: 1800000,
+          audioBitsPerSecond: 128000
+        });
 
-      mediaRecorder.onstop = () => {
-        if (ws.readyState === 1) ws.close();
-      };
-
-      mediaRecorder.start(10000); // 10-second chunks
-      window.mediaRecorder = mediaRecorder;
-      window.ws = ws;
-
-      window.stopRecording = () => {
-        try {
-          if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-            mediaRecorder.stop();
+        let chunks = [];
+        let isRecording = true;
+        
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data && event.data.size > 0) {
+            chunks.push(event.data);
+            console.log('Chunk received, size:', event.data.size);
+            
+            if (ws.readyState === WebSocket.OPEN) {
+              try {
+                ws.send(event.data);
+                console.log('Chunk sent successfully');
+              } catch (error) {
+                console.error('Error sending chunk:', error);
+                isRecording = false;
+                mediaRecorder.stop();
+              }
+            } else {
+              console.warn('WebSocket not open, chunk not sent');
+              isRecording = false;
+              mediaRecorder.stop();
+            }
           }
-          if (ws && ws.readyState === 1) {
+        };
+
+        mediaRecorder.onstop = () => {
+          console.log('MediaRecorder stopped');
+          if (ws.readyState === WebSocket.OPEN) {
             ws.close();
           }
-        } catch (err) {}
-      };
+          stream.getTracks().forEach(track => track.stop());
+        };
+
+        mediaRecorder.onerror = (error) => {
+          console.error('MediaRecorder error:', error);
+          isRecording = false;
+          mediaRecorder.stop();
+        };
+
+        // Start recording with smaller chunks for more frequent updates
+        mediaRecorder.start(10000); // 10-second chunks
+        console.log('MediaRecorder started');
+        
+        window.mediaRecorder = mediaRecorder;
+        window.ws = ws;
+
+        // Add a heartbeat to check recording status
+        setInterval(() => {
+          if (!isRecording) {
+            console.log('Recording stopped, cleaning up...');
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+              mediaRecorder.stop();
+            }
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.close();
+            }
+          }
+        }, 5000);
+
+        window.stopRecording = () => {
+          try {
+            isRecording = false;
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+              mediaRecorder.stop();
+              console.log('Recording stopped via stopRecording');
+            }
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.close();
+              console.log('WebSocket closed via stopRecording');
+            }
+          } catch (err) {
+            console.error('Error stopping recording:', err);
+          }
+        };
+      } catch (error) {
+        console.error('Error setting up screen share:', error);
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.close();
+        }
+      }
     })();
   `);
+  log.info("Screen share recording started");
 }
 
 async function waitForMeetingToEndOrAlone(
   driver: WebDriver
 ): Promise<MeetingEndReason> {
+  log.info("Waiting for meeting to end or alone timeout...");
   let aloneSince: number | null = null;
   const ALONE_TIMEOUT = 3 * 60 * 1000; // 3 minutes
 
   while (true) {
     let participantCount = 1;
     try {
-      // Try to get participant count from the Meet UI (top right button)
+      // Method 1: Try to get participant count from the Meet UI (top right button)
       const countElem = await driver.findElement(
         By.css('[aria-label^="Participants"]')
       );
       const label = await countElem.getAttribute("aria-label");
       const match = label.match(/(\d+)/);
-      if (match) participantCount = parseInt(match[1], 10);
-    } catch (e) {
-      // Fallback: count participant tiles
-      try {
-        const tiles = await driver.findElements(By.css('div[role="listitem"]'));
-        participantCount = tiles.length;
-      } catch (e2) {
-        participantCount = 1;
+      if (match) {
+        participantCount = parseInt(match[1], 10);
+        log.debug(`Method 1 - Participant count from UI: ${participantCount}`);
       }
+    } catch (e) {
+      log.debug("Method 1 failed to get participant count");
     }
+
+    // Method 2: Count participant tiles
+    try {
+      const tiles = await driver.findElements(By.css('div[role="listitem"]'));
+      const tileCount = tiles.length;
+      log.debug(`Method 2 - Participant tiles count: ${tileCount}`);
+      // Use the higher count between methods
+      participantCount = Math.max(participantCount, tileCount);
+    } catch (e) {
+      log.debug("Method 2 failed to get participant count");
+    }
+
+    // Method 3: Check for active video streams
+    try {
+      const videoElements = await driver.findElements(By.css("video[src]"));
+      const videoCount = videoElements.length;
+      log.debug(`Method 3 - Active video streams: ${videoCount}`);
+      // Use the higher count between methods
+      participantCount = Math.max(participantCount, videoCount);
+    } catch (e) {
+      log.debug("Method 3 failed to get participant count");
+    }
+
+    // Method 4: Check for participant names
+    try {
+      const nameElements = await driver.findElements(
+        By.css("[data-participant-id]")
+      );
+      const nameCount = nameElements.length;
+      log.debug(`Method 4 - Participant names count: ${nameCount}`);
+      // Use the higher count between methods
+      participantCount = Math.max(participantCount, nameCount);
+    } catch (e) {
+      log.debug("Method 4 failed to get participant count");
+    }
+
+    log.debug(`Final participant count: ${participantCount}`);
 
     // Check for meeting end or removal
     try {
       await driver.findElement(
-        By.xpath("//span[contains(text(), 'You’ve been removed')]")
+        By.xpath("//span[contains(text(), 'You've been removed')]")
       );
+      log.info("Meeting ended: User was removed");
       return MeetingEndReason.REMOVED;
     } catch (e) {}
     try {
       await driver.findElement(
         By.xpath("//span[contains(text(), 'Meeting ended')]")
       );
+      log.info("Meeting ended: Meeting was ended");
       return MeetingEndReason.ENDED;
     } catch (e) {}
 
     // Check if alone
     if (participantCount <= 1) {
-      if (!aloneSince) aloneSince = Date.now();
+      if (!aloneSince) {
+        aloneSince = Date.now();
+        log.info("Meeting is empty, starting alone timer");
+      }
       if (Date.now() - aloneSince > ALONE_TIMEOUT) {
-        console.log("Alone for 3 minutes, exiting...");
+        log.info("Alone for 3 minutes, exiting...");
         return MeetingEndReason.ALONE;
       }
     } else {
-      aloneSince = null;
+      if (aloneSince) {
+        log.info(
+          `Participants detected (${participantCount}), resetting alone timer`
+        );
+        aloneSince = null;
+      }
     }
 
     await driver.sleep(5000); // Check every 5 seconds
@@ -194,27 +359,34 @@ async function waitForMeetingToEndOrAlone(
 }
 
 async function main() {
+  log.info("Starting recording process...");
   startWebSocketServer(3001);
   const driver = await getDriver();
   await openMeet(driver);
   await muteMeetAudio(driver);
+  log.info("Waiting for host to admit...");
   await new Promise((x) => setTimeout(x, 20000)); // Wait for host to admit
   await startScreenshare(driver);
 
   // Wait for meeting end or alone timeout
   const reason = await waitForMeetingToEndOrAlone(driver);
+  log.info(`Meeting ended with reason: ${reason}`);
 
   // Stop recording gracefully before quitting
   try {
+    log.info("Stopping recording...");
     await driver.executeScript(
       `if(window.stopRecording) window.stopRecording();`
     );
     await driver.sleep(2000); // Give time for recorder to finish
+    log.info("Recording stopped successfully");
   } catch (e) {
-    console.log("Could not stop recording gracefully:", e);
+    log.error("Could not stop recording gracefully:", e);
   }
 
+  log.info("Closing browser...");
   await driver.quit();
+  log.info("Process completed successfully");
   process.exit(0);
 }
 
