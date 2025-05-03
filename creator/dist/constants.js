@@ -48,6 +48,7 @@ exports.CHROME_CONSTANTS = {
         "--no-first-run",
         "--disable-background-timer-throttling",
         "--disable-backgrounding-occluded-windows",
+        "--user-data-dir=/path/to/your/chrome-profile",
     ],
     MEDIA_STREAM_OPTIONS: {
         video: {

@@ -2,6 +2,7 @@
 import { Builder, Browser, By, until, WebDriver } from "selenium-webdriver";
 import { Options } from "selenium-webdriver/chrome";
 import { startWebSocketServer } from "./ws";
+import { CHROME_CONSTANTS } from "./constants";
 
 // Logging utility
 const log = {
@@ -128,133 +129,84 @@ async function getDriver() {
 async function startScreenshare(driver: WebDriver) {
   log.info("Starting screen share recording...");
   await driver.executeScript(`
-    (async () => {
-      const ws = new WebSocket('ws://localhost:3001');
-      
-      // Add WebSocket event listeners
-      ws.onopen = () => {
-        console.log('WebSocket connection established');
-      };
-      
-      ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
-      };
-      
-      ws.onclose = () => {
-        console.log('WebSocket connection closed');
-      };
+        (async () => {
+        const ws = new WebSocket('ws://localhost:3001');
+        let wsReady = false;
 
-      await new Promise(res => {
-        if (ws.readyState === WebSocket.OPEN) {
-          res();
-        } else {
-          ws.onopen = res;
-        }
-      });
+        ws.onopen = () => {
+            console.log('Connected to WebSocket server');
+            wsReady = true;
+        };
 
-      await new Promise(res => setTimeout(res, 3000));
+        ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+            wsReady = false;
+        };
 
-      try {
-        const stream = await navigator.mediaDevices.getDisplayMedia({
-          video: { 
-            displaySurface: "browser",
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
-            frameRate: { ideal: 30 }
-          },
-          audio: true
+        ws.onclose = () => {
+            console.log('Disconnected from WebSocket server');
+            wsReady = false;
+        };
+
+        const mediaStreamOptions = ${JSON.stringify(
+          CHROME_CONSTANTS.MEDIA_STREAM_OPTIONS
+        )};
+        const stream = await navigator.mediaDevices.getDisplayMedia(mediaStreamOptions);
+
+        const audioContext = new AudioContext();
+        const audioEl1 = document.querySelectorAll("audio")[0];
+        const audioEl2 = document.querySelectorAll("audio")[1];
+        const audioEl3 = document.querySelectorAll("audio")[2];
+        const audioStream1 = audioContext.createMediaStreamSource(audioEl1.srcObject)
+        const audioStream2 = audioContext.createMediaStreamSource(audioEl2.srcObject)
+        const audioStream3 = audioContext.createMediaStreamSource(audioEl3.srcObject)
+
+        const dest = audioContext.createMediaStreamDestination();
+        audioStream1.connect(dest)
+        audioStream2.connect(dest)
+        audioStream3.connect(dest)
+
+        const combinedStream = new MediaStream([
+            ...stream.getVideoTracks(),
+            ...dest.stream.getAudioTracks()
+        ]);
+
+        const mediaRecorder = new MediaRecorder(combinedStream, {
+            mimeType: "video/webm; codecs=vp8,opus",
+            timeSlice: 10000,
+            videoBitsPerSecond: 1800000,
         });
 
-        console.log('Screen share stream obtained');
+        console.log("Starting media recording...");
+        mediaRecorder.start(10000);
 
-        const mediaRecorder = new MediaRecorder(stream, {
-          mimeType: "video/webm; codecs=vp8,opus",
-          videoBitsPerSecond: 1800000,
-          audioBitsPerSecond: 128000
-        });
-
-        let chunks = [];
-        let isRecording = true;
-        
         mediaRecorder.ondataavailable = (event) => {
-          if (event.data && event.data.size > 0) {
-            chunks.push(event.data);
-            console.log('Chunk received, size:', event.data.size);
-            
-            if (ws.readyState === WebSocket.OPEN) {
-              try {
+            if (wsReady) {
+            try {
                 ws.send(event.data);
-                console.log('Chunk sent successfully');
-              } catch (error) {
+                console.log('Sent data');
+            } catch (error) {
                 console.error('Error sending chunk:', error);
-                isRecording = false;
-                mediaRecorder.stop();
-              }
-            } else {
-              console.warn('WebSocket not open, chunk not sent');
-              isRecording = false;
-              mediaRecorder.stop();
             }
-          }
+            } else {
+            console.error('WebSocket is not ready to send data');
+            }
         };
 
         mediaRecorder.onstop = () => {
-          console.log('MediaRecorder stopped');
-          if (ws.readyState === WebSocket.OPEN) {
+            stream.getTracks().forEach(track => track.stop());
             ws.close();
-          }
-          stream.getTracks().forEach(track => track.stop());
+            console.log('Media recording stopped');
         };
-
-        mediaRecorder.onerror = (error) => {
-          console.error('MediaRecorder error:', error);
-          isRecording = false;
-          mediaRecorder.stop();
-        };
-
-        // Start recording with smaller chunks for more frequent updates
-        mediaRecorder.start(10000); // 10-second chunks
-        console.log('MediaRecorder started');
-        
-        window.mediaRecorder = mediaRecorder;
-        window.ws = ws;
-
-        // Add a heartbeat to check recording status
-        setInterval(() => {
-          if (!isRecording) {
-            console.log('Recording stopped, cleaning up...');
-            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-              mediaRecorder.stop();
-            }
-            if (ws && ws.readyState === WebSocket.OPEN) {
-              ws.close();
-            }
-          }
-        }, 5000);
 
         window.stopRecording = () => {
-          try {
-            isRecording = false;
-            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-              mediaRecorder.stop();
-              console.log('Recording stopped via stopRecording');
+            if (mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+                ws.close();
             }
-            if (ws && ws.readyState === WebSocket.OPEN) {
-              ws.close();
-              console.log('WebSocket closed via stopRecording');
-            }
-          } catch (err) {
-            console.error('Error stopping recording:', err);
-          }
         };
-      } catch (error) {
-        console.error('Error setting up screen share:', error);
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.close();
-        }
-      }
-    })();
-  `);
+        })();
+    `);
   log.info("Screen share recording started");
 }
 
